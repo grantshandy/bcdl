@@ -9,9 +9,12 @@ use clap::Arg;
 use colored::Colorize;
 use futures_util::StreamExt;
 use linya::{Bar, Progress};
-use scraper::{html::Select, Html, Selector};
+use scraper::{Html, Selector};
 use serde_json::Value;
 use chrono::prelude::*;
+use anyhow::{Result, Error};
+use url::Url;
+use anyhow::anyhow;
 
 #[derive(Debug, Clone)]
 pub struct Song {
@@ -28,42 +31,126 @@ pub struct Song {
 
 #[tokio::main]
 async fn main() {
+    match run().await {
+        Ok(_) => (),
+        Err(error) => {
+            nice_error(error.to_string().as_str());
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run() -> Result<(), Error> {
     let app = app_from_crate!()
-        .arg(
-            Arg::with_name("url")
-                .short("u")
-                .long("url")
-                .takes_value(true)
-                .required(true)
-                .help("Download from bandcamp URL"),
-        )
-        .get_matches();
+    .arg(
+        Arg::with_name("url")
+            .short("u")
+            .long("url")
+            .takes_value(true)
+            .required(true)
+            .help("Download from bandcamp URL"),
+    )
+    .get_matches();
 
     let url = match app.value_of("url") {
         Some(data) => data,
         None => panic!(""),
     };
 
-    let plaintext = reqwest::get(url).await.unwrap().text().await.unwrap();
+    let _ = Url::parse(url)?;
+
+    let download_type = match url.split("/").nth(3) {
+        Some(data) => data,
+        None => return Err(anyhow!("Can't find download type from url")),
+    };
+
+    println!("{} {} {}", "Downloading".bold(), download_type.bold(), "page...".bold());
+    let plaintext = reqwest::get(url)
+    .await
+    .unwrap()
+    .text()
+    .await
+    .unwrap();
 
     let html = Html::parse_document(&plaintext);
-    let json_selector = Selector::parse("script[type='application/ld+json']").unwrap();
-    let json_text = html.select(&json_selector);
-    let song_list = parse_album(json_text);
+    let json_selector = match Selector::parse("script[type='application/ld+json']") {
+        Ok(data) => data,
+        Err(_) => return Err(anyhow!("Couldn't find script in webpage source.")),
+    };
 
-    download_songs(song_list).await;
+    let json_text = html.select(&json_selector);
+    let json = match json_text.into_iter().nth(0) {
+        Some(data) => data,
+        None => return Err(anyhow!("Couldn't get first json text.")),
+    };
+    let json: Value = serde_json::from_str(&json.inner_html())?;
+
+    let song_list = match download_type {
+        "album" => match parse_album(json) {
+            Ok(data) => data,
+            Err(error) => return Err(error),
+        },
+        "track" => match parse_track(json) {
+            Ok(data) => data,
+            Err(error) => return Err(error),
+        },
+        &_ => return Err(anyhow!("Unsupported URL type. Not album or track.")),
+    };
+
+    download_songs(song_list).await?;
+
+    Ok(())
 }
 
-fn parse_album(json_text: Select) -> Vec<Song> {
+fn parse_track(json: Value) -> Result<Vec<Song>, Error> {
     let mut song_list: Vec<Song> = Vec::new();
 
-    let json = json_text.into_iter().nth(0).unwrap();
-    let json: Value = serde_json::from_str(&json.inner_html()).unwrap();
+    let album = json["inAlbum"]["name"].to_string().replace("\"", "");
+    let image_url = json["image"].to_string().replace("\"", "");
+    let site_url = json["@id"].to_string().replace("\"", "");
+    let artist = json["inAlbum"]["byArtist"]["name"].to_string().replace("\"", "");
+    let release_date = json["datePublished"].to_string().replace("\"", "");
+    let description = "".to_string();
+    let name = json["name"].to_string().replace("\"", "");
+
+    let mut audio_url: Option<String> = None;
+    let mut track_num: usize = 0;
+
+    for property in json["additionalProperty"].as_array().unwrap() {
+        if property["name"].to_string().replace("\"", "") == "tracknum" {
+            track_num = match property["value"].as_u64() {
+                Some(data) => data,
+                None => return Err(anyhow!("tracknum is not f64")),
+            } as usize;
+        }
+
+        if property["name"].to_string().replace("\"", "") == "file_mp3-128" {
+            audio_url = Some(property["value"].to_string().replace("\"", ""));
+        }
+    }
+
+    song_list.push(Song {
+        album,
+        artist,
+        track_num,
+        name,
+        audio_url,
+        image_url,
+        site_url,
+        release_date,
+        description,
+    });
+
+    return Ok(song_list);
+}
+
+fn parse_album(json: Value) -> Result<Vec<Song>, Error> {
+    let mut song_list: Vec<Song> = Vec::new();
 
     let album = json["name"].to_string().replace("\"", "");
     let image_url = json["image"].to_string().replace("\"", "");
     let site_url = json["@id"].to_string().replace("\"", "");
-    let artist = json["publisher"]["name"].to_string().replace("\"", "");
+    let artist = json["byArtist"]["name"].to_string().replace("\"", "");
     let tracks = json["track"]["itemListElement"].as_array().unwrap();
     let release_date = json["datePublished"].to_string().replace("\"", "");
     let description = remove_first_and_last(json["description"].to_string());
@@ -121,7 +208,7 @@ fn parse_album(json_text: Select) -> Vec<Song> {
         }
     }
 
-    return song_list;
+    return Ok(song_list);
 }
 
 fn remove_first_and_last(value: String) -> String {
@@ -137,7 +224,7 @@ fn nice_error(message: &str) {
     eprintln!("For more information try {}", "--help".green());
 }
 
-async fn download_songs(song_list: Vec<Song>) {
+async fn download_songs(song_list: Vec<Song>) -> Result<(), Error> {
     for song in song_list {
         let audio_url = match song.clone().audio_url {
             Some(data) => data,
@@ -151,7 +238,7 @@ async fn download_songs(song_list: Vec<Song>) {
             }
         };
 
-        let request = reqwest::get(audio_url).await.unwrap();
+        let request = reqwest::get(audio_url).await?;
 
         let content_length = request.content_length().unwrap() as usize;
 
@@ -172,7 +259,7 @@ async fn download_songs(song_list: Vec<Song>) {
         let mut buf = BytesMut::with_capacity(content_length);
 
         while let Some(item) = stream.next().await {
-            let item = item.unwrap();
+            let item = item?;
             buf.put(item.clone());
 
             let amt = item.len();
@@ -181,30 +268,32 @@ async fn download_songs(song_list: Vec<Song>) {
             progress.set_and_draw(&bar, num_bytes);
         }
 
-        let mut music_path = std::env::current_dir().unwrap();
+        let mut music_path = std::env::current_dir()?;
         music_path.push(song.clone().artist);
         music_path.push(song.clone().album);
 
         if !music_path.exists() {
-            fs::create_dir_all(&music_path).unwrap();
+            fs::create_dir_all(&music_path)?;
         }
 
         music_path.push(format!("{}.mp3", song.name));
 
         fstream::write(&music_path, buf, false).unwrap();
 
-        write_music_tags(music_path, song).await;
+        write_music_tags(music_path, song).await?;
     }
+
+    Ok(())
 }
 
-async fn write_music_tags(music_path: PathBuf, song: Song) {
+async fn write_music_tags(music_path: PathBuf, song: Song) -> Result<(), Error> {
     let mut tag = Tag::new();
     tag.set_album(song.album.to_string());
     tag.set_artist(song.artist.to_string());
     tag.set_title(song.name.to_string());
     tag.set_track(song.track_num as u32);
     
-    let date = DateTime::parse_from_rfc2822(&song.release_date).unwrap();
+    let date = DateTime::parse_from_rfc2822(&song.release_date)?;
     let timestamp = Timestamp {
         year: date.year(),
         day: Some(date.day() as u8),
@@ -239,5 +328,7 @@ async fn write_music_tags(music_path: PathBuf, song: Song) {
         data: picture_data,
     });
 
-    tag.write_to_path(music_path, Version::Id3v24).unwrap();    
+    tag.write_to_path(music_path, Version::Id3v24)?;
+
+    Ok(())
 }
