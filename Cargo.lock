@@ -62,8 +62,8 @@ dependencies = [
  "reqwest",
  "scraper",
  "serde_json",
+ "size-display",
  "tokio",
- "url",
 ]
 
 [[package]]
@@ -1253,6 +1253,12 @@ name = "siphasher"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "533494a8f9b724d33625ab53c6c4800f7cc445895924a8ef649222dcb76e938b"
+
+[[package]]
+name = "size-display"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df415f09e1c4d4f58cd0cd08b2f5385bc07cf1878e7a7846abc2225fa00e1e1"
 
 [[package]]
 name = "slab"
