@@ -8,6 +8,7 @@ homepage = "https://github.com/grantshandy/bcdl"
 repository = "https://github.com/grantshandy/bcdl"
 keywords = ["bandcamp", "music", "downloader", "free", "cli"]
 categories = ["Command line utilities"]
+license = "GPL-3.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
