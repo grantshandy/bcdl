@@ -9,8 +9,9 @@ $ cargo install bcdl
 
 From release page:
 ```shell
-$ curl https://github.com/WORKINPROGRESS
+$ curl https://github.com/grantshandy/bcdl/releases/download/0.1.0/bcdl-0.1.0-linux_x86_64
 ```
+*note: Windows builds also exist in the release page.*
 
 ## Example
 ```
