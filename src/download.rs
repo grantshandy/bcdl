@@ -10,72 +10,20 @@ use crate::Song;
 use std::fs;
 use std::path::PathBuf;
 
-pub async fn download_songs(song_list: Vec<Song>, is_debug: bool) -> Result<u64, Error> {
-    let mut num_total_bytes: u64 = 0;
+
+pub async fn download_songs(song_list: Vec<Song>, is_debug: bool, path: Option<PathBuf>) -> Result<u64, Error> {
+    let mut num_total_bytes = 0;
+
+    let path = match path.clone() {
+        Some(data) => data,
+        None => std::env::current_dir().unwrap()
+    };
 
     for song in song_list {
-        let audio_url = match song.clone().audio_url {
-            Some(data) => data,
-            None => {
-                eprintln!(
-                    "{} Audio URL not found for \"{}\"",
-                    "Error:".red().bold(),
-                    song.clone().name
-                );
-                continue;
-            }
-        };
-
-        let request = reqwest::get(audio_url).await?;
-
-        let content_length = request.content_length().unwrap() as usize;
-
-        let mut progress = Progress::new();
-        let bar: Bar = progress.bar(
-            content_length,
-            &format!(
-                "{} Track {} - {}",
-                "Downloading".green().bold(),
-                song.track_num,
-                song.name
-            ),
-        );
-
-        let mut stream = request.bytes_stream();
-        let mut num_song_bytes: usize = 0;
-        let mut buf = BytesMut::with_capacity(content_length);
-
-        while let Some(item) = stream.next().await {
-            let item = item?;
-            buf.put(item.clone());
-
-            num_total_bytes += item.len() as u64;
-            num_song_bytes += item.len();
-
-            progress.set_and_draw(&bar, num_song_bytes);
-        }
-
-        if !is_debug {
-            let mut music_path = std::env::current_dir()?;
-            music_path.push(song.clone().artist);
-            music_path.push(song.clone().album);
-    
-            if !music_path.exists() {
-                fs::create_dir_all(&music_path)?;
-            }
-    
-            music_path.push(format!("{}.mp3", song.name));
-    
-            match fstream::write(&music_path, buf, false) {
-                Some(_) => (),
-                None => return Err(anyhow!("Couldn't write file to disk: {}", song.name)),
-            }
-    
-            write_music_tags(music_path, song).await?;
-        }
+        num_total_bytes += download_song(song, is_debug, path.clone()).await?;
     }
 
-    Ok(num_total_bytes)
+    return Ok(num_total_bytes);
 }
 
 async fn write_music_tags(music_path: PathBuf, song: Song) -> Result<(), Error> {
@@ -121,4 +69,70 @@ async fn write_music_tags(music_path: PathBuf, song: Song) -> Result<(), Error> 
     tag.write_to_path(music_path, Version::Id3v24)?;
 
     Ok(())
+}
+
+async fn download_song(song: Song, is_debug: bool, path: PathBuf) -> Result<u64, Error> {
+    let mut num_total_bytes: u64 = 0;
+    
+    let audio_url = match song.clone().audio_url {
+        Some(data) => data,
+        None => {
+            eprintln!(
+                "{} Audio URL not found for \"{}\"",
+                "Error:".red().bold(),
+                song.clone().name
+            );
+            return Ok(0);
+        }
+    };
+
+    let request = reqwest::get(audio_url).await?;
+
+    let content_length = request.content_length().unwrap() as usize;
+
+    let mut progress = Progress::new();
+    let bar: Bar = progress.bar(
+        content_length,
+        &format!(
+            "{} Track {} - {}",
+            "Downloading".green().bold(),
+            song.track_num,
+            song.name
+        ),
+    );
+
+    let mut stream = request.bytes_stream();
+    let mut num_song_bytes: usize = 0;
+    let mut buf = BytesMut::with_capacity(content_length);
+
+    while let Some(item) = stream.next().await {
+        let item = item?;
+        buf.put(item.clone());
+
+        num_total_bytes += item.len() as u64;
+        num_song_bytes += item.len();
+
+        progress.set_and_draw(&bar, num_song_bytes);
+    }
+
+    if !is_debug {
+        let mut path = path;
+        path.push(song.clone().artist);
+        path.push(song.clone().album);
+    
+        if !path.exists() {
+            fs::create_dir_all(&path)?;
+        }
+    
+        path.push(format!("{}.mp3", song.name));
+
+        match fstream::write(&path, buf, false) {
+            Some(_) => (),
+            None => return Err(anyhow!("Couldn't write file to disk: {}", song.name)),
+        }
+
+        write_music_tags(path, song).await?;
+    }
+
+    Ok(num_total_bytes)
 }

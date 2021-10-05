@@ -27,7 +27,7 @@ pub fn parse_track(json: Value) -> Result<Vec<Song>, Error> {
         }
 
         if property["name"].to_string().replace("\"", "") == "file_mp3-128" {
-            audio_url = Some(property["value"].to_string().replace("\"", ""));
+            audio_url = Some(remove_first_and_last(property["value"].to_string()));
         }
     }
 

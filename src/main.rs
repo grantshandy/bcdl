@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate clap;
 
+use std::{path::PathBuf, str::FromStr};
 use clap::Arg;
 use colored::Colorize;
 use serde_json::Value;
@@ -38,25 +39,45 @@ async fn run() -> Result<(), Error> {
         Arg::with_name("debug")
             .short("d")
             .long("debug")
-            .help("Don't actually save the songs"),
+            .help("Don't actually save the songs for debugging purposes"),
+    )
+    .arg(
+        Arg::with_name("path")
+            .short("p")
+            .long("path")
+            .help("Path to save songs to")
+            .takes_value(true)
     )
     .get_matches();
 
     let url = app.value_of("url").unwrap();
     let debug = app.is_present("debug");
+    let path = match app.value_of("path") {
+        Some(data) => match PathBuf::from_str(data) {
+            Ok(data) => Some(data),
+            Err(error) => {
+                nice_error(&format!("Malformed path: {}", error));
+                std::process::exit(1);
+            }
+        }
+        None => None,
+    };
 
     let download_type = match url.split("/").nth(3) {
-        Some(data) => data,
+        Some(data) => match data {
+            "album" => data,
+            "track" => data,
+            &_ => return Err(anyhow!("Unsupported URL type. Not album or track.")),
+        },
         None => return Err(anyhow!("Can't find download type from url")),
     };
 
     println!("{} {} {}", "Downloading".bold(), download_type.bold(), "page...".bold());
+    
     let plaintext = reqwest::get(url)
-        .await
-        .unwrap()
+        .await?
         .text()
-        .await
-        .unwrap();
+        .await?;
 
     let html = Html::parse_document(&plaintext);
     let json_selector = match Selector::parse("script[type='application/ld+json']") {
@@ -64,12 +85,11 @@ async fn run() -> Result<(), Error> {
         Err(_) => return Err(anyhow!("Couldn't find script in webpage source.")),
     };
 
-    let json_text = html.select(&json_selector);
-    let json = match json_text.into_iter().nth(0) {
+    let json_element = match html.select(&json_selector).into_iter().nth(0) {
         Some(data) => data,
         None => return Err(anyhow!("Couldn't get first json text.")),
     };
-    let json: Value = serde_json::from_str(&json.inner_html())?;
+    let json: Value = serde_json::from_str(&json_element.inner_html())?;
 
     let song_list = match download_type {
         "album" => match parse::parse_album(json) {
@@ -80,23 +100,22 @@ async fn run() -> Result<(), Error> {
             Ok(data) => data,
             Err(error) => return Err(error),
         },
-        &_ => return Err(anyhow!("Unsupported URL type. Not album or track.")),
+        &_ => panic!(""),
     };
 
     let before_downloaded = Utc::now();
-    let download_size = download::download_songs(song_list.clone(), debug).await?;
+    let download_size = download::download_songs(song_list.clone(), debug, path).await?;
     let time_difference = Utc::now().signed_duration_since(before_downloaded).num_seconds();
 
     let num_tracks = match song_list.len() {
         1 => format!("1 Track"),
         _ => format!("{} Tracks", song_list.len()),
     };
-
     println!("{}", format!("Downloaded {} and {:.2} in {} Seconds.", num_tracks, Size(download_size), time_difference).yellow());
 
     Ok(())
 }
-
+ 
 fn nice_error(message: &str) {
     eprintln!("{} {}", "error:".red().bold(), message);
     eprintln!("\nUSAGE:\n    bcdl --url <url>\n");
